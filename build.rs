@@ -6,6 +6,8 @@ fn main() {
 	let rust_toolchain = Path::new(rust_toolchain.as_str()).file_name().unwrap().to_str().unwrap();
 	if rust_toolchain.starts_with("stable") {
 		// do nothing
+	} else if rust_toolchain.starts_with("1.86.0") {
+		// do nothing
 	} else if rust_toolchain.starts_with("nightly") {
 		//enable the 'nightly-features' feature flag
 		println!("cargo:rustc-cfg=feature=\"nightly-features\"");
