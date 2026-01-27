@@ -2,9 +2,11 @@ use core::panic;
 
 use ndarray::{Array1, Array2, ArrayBase, Axis, Data, Ix1, Ix2};
 use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
+use rayon::prelude::ParallelSliceMut;
+use rayon::iter::IndexedParallelIterator;
 
 use crate::data::MatrixDataSource;
-use crate::graphs::Graph;
+use crate::graphs::{Graph, WDirLoLGraph};
 use crate::heaps::{DualHeap, MaxHeap, MinHeap};
 use crate::random::random_unique_uint;
 use crate::types::{SyncUnsignedInteger, SyncFloat, trait_combiner};
@@ -189,7 +191,7 @@ pub trait GraphIndex<R: SyncUnsignedInteger, F: SyncFloat, Dist: Distance<F>>: G
 	/// Create a simple cache
 	fn _new_search_cache(&self, max_heap_size: usize) -> Self::SearchCache;
 	/// Initializes a search cache for a new query.
-	fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize);
+	fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize, entrypoints_override: Option<&Vec<R>>);
 	/// Returns the number of layers in the graph index.
 	fn layer_count(&self) -> usize;
 	/// Returns the graph at the given layer if available, otherwise returns an error.
@@ -204,7 +206,7 @@ pub trait GraphIndex<R: SyncUnsignedInteger, F: SyncFloat, Dist: Distance<F>>: G
 	/// Executes a greedy search on the hierarchy with a maximum heap size and returns the heap containing the results.
 	#[inline(always)]
 	fn greedy_search<D: Data<Elem=F>>(&self, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize, cache: &mut Self::SearchCache) -> (Array1<R>, Array1<F>) {
-		self._init_cache(cache, q, k_neighbors, max_heap_size);
+		self._init_cache(cache, q, k_neighbors, max_heap_size, None);
 		/* Search all layers graph */
 		self.greedy_search_with_cache(q, cache, max_heap_size);
 		/* Extract the k nearest neighbors */
@@ -251,6 +253,58 @@ pub trait GraphIndex<R: SyncUnsignedInteger, F: SyncFloat, Dist: Distance<F>>: G
 			if idx_map.is_some() {
 				cache.apply_local_id_map(unsafe{idx_map.unwrap_unchecked()});
 			}
+		}
+	}
+	/// Self join using the regular `greedy_search_batch` function
+	fn self_join_query(&self, k_neighbors: usize, max_heap_size: usize) -> WDirLoLGraph<R,F> {
+		let query = self.get_rows_slice(0, self.n_rows());
+		let (ids, dists) = self.greedy_search_batch(&query, k_neighbors, max_heap_size);
+		let adjacency = ids.axis_iter(Axis(0)).zip(dists.axis_iter(Axis(0)))
+		.map(|(i_ids, i_dists)| {
+			i_dists.into_iter().zip(i_ids.into_iter())
+			.map(|(&w,&i)| (w,i)).collect()
+		}).collect();
+		WDirLoLGraph {
+			adjacency: adjacency,
+			n_edges: self.n_rows() * k_neighbors,
+		}
+	}
+	/// Self join using the `greedy_search_layer_with_cache` function on the bottom layer
+	fn self_join_query_local(&self, k_neighbors: usize, max_heap_size: usize) -> WDirLoLGraph<R,F> {
+		let n_queries = self.n_rows();
+		let query = self.get_rows_slice(0, n_queries);
+		let n_threads = rayon::current_num_threads();
+		let batch_per_thread = (n_queries+n_threads-1)/n_threads;
+		let mut adjacency: Vec<Vec<(F,R)>> = (0..n_queries).map(|_| Vec::with_capacity(k_neighbors)).collect();
+		(0..n_threads).into_par_iter()
+		.zip(adjacency.par_chunks_mut(batch_per_thread))
+		.zip(query.axis_chunks_iter(Axis(0), batch_per_thread).collect::<Vec<_>>().into_par_iter())
+		// .into_iter()
+		.for_each(|((i_thread, adjacency_chunk), query_chunk)| {
+			let mut cache = self._new_search_cache(max_heap_size);
+			let mut entrypoints_override = Vec::new();
+			entrypoints_override.push(R::zero());
+			let i_start = i_thread * batch_per_thread;
+			let i_end = i_start + adjacency_chunk.len();
+			(i_start..i_end)
+			.zip(adjacency_chunk.iter_mut())
+			.zip(query_chunk.axis_iter(Axis(0)))
+			.for_each(|((i_q, adj), q)| {
+				*entrypoints_override.get_mut(0).unwrap() = R::from(i_q).unwrap();
+				self._init_cache(&mut cache, &q, k_neighbors, max_heap_size, Some(&entrypoints_override));
+				self.greedy_search_layer_with_cache(
+					&q,
+					&mut cache,
+					max_heap_size,
+					0,
+				);
+				let (ids_i, dists_i) = cache.extract_nn(k_neighbors);
+				dists_i.into_iter().zip(ids_i.into_iter()).for_each(|(w,i)| adj.push((w,i)))
+			});
+		});
+		WDirLoLGraph {
+			adjacency: adjacency,
+			n_edges: self.n_rows() * k_neighbors,
 		}
 	}
 }
@@ -312,12 +366,12 @@ macro_rules! graph_index_default_funs(
 		graph_index_default_funs!(layered);
 		graph_index_default_funs!(capped);
 		#[inline(always)]
-		fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize) {
+		fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize, entrypoints_override: Option<&Vec<R>>) {
 			cache.clear();
 			cache.reserve(max_heap_size, self.max_frontier_size);
 			let heap = &mut cache.heap;
 			let ids = self.get_global_layer_ids(self.layer_count()-1);
-			if self.entry_points.is_none() {
+			if entrypoints_override.is_none() && self.entry_points.is_none() {
 				if ids.is_some() {
 					let ids = unsafe{ids.unwrap_unchecked()};
 					random_unique_uint::<R>(ids.len(), k_neighbors).iter().for_each(|&v|
@@ -329,7 +383,11 @@ macro_rules! graph_index_default_funs(
 					);
 				}
 			} else {
-				let entry_points = unsafe{self.entry_points.as_ref().unwrap_unchecked()};
+				let entry_points = unsafe{if entrypoints_override.is_none() {
+					self.entry_points.as_ref().unwrap_unchecked()
+				} else {
+					entrypoints_override.as_ref().unwrap_unchecked()
+				}};
 				if ids.is_some() {
 					let ids = unsafe{ids.unwrap_unchecked()};
 					random_unique_uint::<u64>(entry_points.len(), k_neighbors).iter().for_each(|&v| {
@@ -354,12 +412,12 @@ macro_rules! graph_index_default_funs(
 		graph_index_default_funs!(layered);
 		graph_index_default_funs!(uncapped);
 		#[inline(always)]
-		fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize) {
+		fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize, entrypoints_override: Option<&Vec<R>>) {
 			cache.clear();
 			cache.reserve(max_heap_size);
 			let heap = &mut cache.heap;
 			let ids = self.get_global_layer_ids(self.layer_count()-1);
-			if self.entry_points.is_none() {
+			if entrypoints_override.is_none() && self.entry_points.is_none() {
 				if ids.is_some() {
 					let ids = unsafe{ids.unwrap_unchecked()};
 					random_unique_uint::<R>(ids.len(), k_neighbors).iter().for_each(|&v|
@@ -371,7 +429,11 @@ macro_rules! graph_index_default_funs(
 					);
 				}
 			} else {
-				let entry_points = unsafe{self.entry_points.as_ref().unwrap_unchecked()};
+				let entry_points = unsafe{if entrypoints_override.is_none() {
+					self.entry_points.as_ref().unwrap_unchecked()
+				} else {
+					entrypoints_override.as_ref().unwrap_unchecked()
+				}};
 				if ids.is_some() {
 					let ids = unsafe{ids.unwrap_unchecked()};
 					random_unique_uint::<u64>(entry_points.len(), k_neighbors).iter().for_each(|&v| {
@@ -396,16 +458,20 @@ macro_rules! graph_index_default_funs(
 		graph_index_default_funs!(single);
 		graph_index_default_funs!(capped);
 		#[inline(always)]
-		fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize) {
+		fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize, entrypoints_override: Option<&Vec<R>>) {
 			cache.clear();
 			cache.reserve(max_heap_size, self.max_frontier_size);
 			let heap = &mut cache.heap;
-			if self.entry_points.is_none() {
+			if entrypoints_override.is_none() && self.entry_points.is_none() {
 				random_unique_uint::<R>(self.n_rows(), k_neighbors).iter().for_each(|&v|
 					heap.push(self.half_indexed_distance(v, q), v)
 				);
 			} else {
-				let entry_points = unsafe{self.entry_points.as_ref().unwrap_unchecked()};
+				let entry_points = unsafe{if entrypoints_override.is_none() {
+					self.entry_points.as_ref().unwrap_unchecked()
+				} else {
+					entrypoints_override.as_ref().unwrap_unchecked()
+				}};
 				random_unique_uint::<u64>(entry_points.len(), k_neighbors).iter().for_each(|&v| {
 					let v = unsafe{*entry_points.get_unchecked(v as usize)};
 					heap.push(self.half_indexed_distance(v, q), v)
@@ -421,16 +487,20 @@ macro_rules! graph_index_default_funs(
 		graph_index_default_funs!(single);
 		graph_index_default_funs!(uncapped);
 		#[inline(always)]
-		fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize) {
+		fn _init_cache<D: Data<Elem=F>>(&self, cache: &mut Self::SearchCache, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize, entrypoints_override: Option<&Vec<R>>) {
 			cache.clear();
 			cache.reserve(max_heap_size);
 			let heap = &mut cache.heap;
-			if self.entry_points.is_none() {
-				random_unique_uint::<R>(self.n_rows(), k_neighbors).iter().for_each(|&v|
-					heap.push(self.half_indexed_distance(v, q), v)
-				);
+			if entrypoints_override.is_none() && self.entry_points.is_none() {
+					random_unique_uint::<R>(self.n_rows(), k_neighbors).iter().for_each(|&v|
+						heap.push(self.half_indexed_distance(v, q), v)
+					);
 			} else {
-				let entry_points = unsafe{self.entry_points.as_ref().unwrap_unchecked()};
+				let entry_points = unsafe{if entrypoints_override.is_none() {
+					self.entry_points.as_ref().unwrap_unchecked()
+				} else {
+					entrypoints_override.as_ref().unwrap_unchecked()
+				}};
 				random_unique_uint::<u64>(entry_points.len(), k_neighbors).iter().for_each(|&v| {
 					let v = unsafe{*entry_points.get_unchecked(v as usize)};
 					heap.push(self.half_indexed_distance(v, q), v)
@@ -463,7 +533,7 @@ macro_rules! graph_index_default_funs(
 		fn get_local_layer_ids(&self, layer: usize) -> Option<&Vec<R>> { if layer>0 && layer<=self.local_layer_ids.len() {Some(&self.local_layer_ids[layer-1])} else {None} }
 		#[inline(always)]
 		fn greedy_search<D: Data<Elem=F>>(&self, q: &ArrayBase<D,Ix1>, k_neighbors: usize, max_heap_size: usize, cache: &mut Self::SearchCache) -> (Array1<R>, Array1<F>) {
-			self._init_cache(cache, q, if self.graphs.len() == 1 {max_heap_size} else {self.higher_level_max_heap_size}, max_heap_size);
+			self._init_cache(cache, q, if self.graphs.len() == 1 {max_heap_size} else {self.higher_level_max_heap_size}, max_heap_size, None);
 			/* Search all layers graph */
 			self.greedy_search_with_cache(q, cache, max_heap_size);
 			/* Extract the k nearest neighbors */

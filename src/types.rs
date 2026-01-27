@@ -2,6 +2,7 @@ use ndarray_linalg::{Lapack, Scalar};
 use std::iter::{Sum, Product};
 use std::hash::Hash;
 use std::ops::{AddAssign, SubAssign};
+#[cfg(feature="hdf5")]
 use hdf5::H5Type;
 use num::{NumCast, FromPrimitive, ToPrimitive, Zero, One};
 use paste::paste;
@@ -312,7 +313,7 @@ fn test_vfma() {
 	// 	let dist = fun(v1_16.as_slice(), v2_16.as_slice(), v1_16.len()) as f32;
 	// 	assert!((true_dist-dist).abs() < 1e-4, "f16x{:?}: {:?} != {:?}", lanes, true_dist, dist);
 	// });
-	vec![
+	[
 		<f32 as VFMASqEuc<2>>::sq_euc,
 		<f32 as VFMASqEuc<4>>::sq_euc,
 		<f32 as VFMASqEuc<8>>::sq_euc,
@@ -321,7 +322,7 @@ fn test_vfma() {
 		let dist = fun(v1_32.as_slice(), v2_32.as_slice(), v1_32.len());
 		assert!((true_dist_32-dist).abs() < 1e-5, "f32x{:?}: {:?} != {:?}", lanes, true_dist_32, dist);
 	});
-	vec![
+	[
 		<f64 as VFMASqEuc<2>>::sq_euc,
 		<f64 as VFMASqEuc<4>>::sq_euc,
 		<f64 as VFMASqEuc<8>>::sq_euc,
@@ -367,10 +368,14 @@ pub mod python {
 
 trait_combiner!(Static: 'static);
 trait_combiner!(Sync: (std::marker::Send)+(std::marker::Sync));
-#[cfg(feature="python")]
-trait_combiner!(Number: (python::NumpyEquivalent)+Bounded+H5Type+NumCast+FromPrimitive+ToPrimitive+Zero+One+Sum+Product+SubAssign+AddAssign+Copy+Clone+Debug);
-#[cfg(not(feature="python"))]
-trait_combiner!(Number: Bounded+H5Type+NumCast+FromPrimitive+ToPrimitive+Zero+One+Sum+Product+SubAssign+AddAssign+Copy+Clone+Debug);
+#[cfg(all(feature="python", feature="hdf5"))]
+trait_combiner!(Number: (python::NumpyEquivalent)+Bounded+H5Type+NumCast+FromPrimitive+ToPrimitive+Zero+One+Sum+Product+SubAssign+AddAssign+Copy+Clone+Debug+'static);
+#[cfg(all(feature="python", not(feature="hdf5")))]
+trait_combiner!(Number: (python::NumpyEquivalent)+Bounded+NumCast+FromPrimitive+ToPrimitive+Zero+One+Sum+Product+SubAssign+AddAssign+Copy+Clone+Debug+'static);
+#[cfg(all(not(feature="python"), feature="hdf5"))]
+trait_combiner!(Number: Bounded+H5Type+NumCast+FromPrimitive+ToPrimitive+Zero+One+Sum+Product+SubAssign+AddAssign+Copy+Clone+Debug+'static);
+#[cfg(all(not(feature="python"), not(feature="hdf5")))]
+trait_combiner!(Number: Bounded+NumCast+FromPrimitive+ToPrimitive+Zero+One+Sum+Product+SubAssign+AddAssign+Copy+Clone+Debug+'static);
 
 macro_rules! make_num_variants {
 	($($baseType:ident),*) => {

@@ -248,8 +248,8 @@ pub trait VecViewableWeightedAdjGraph<R: UnsignedInteger, F: Float>: WeightedGra
 
 
 pub struct DirLoLGraph<R: UnsignedInteger> {
-	adjacency: Vec<Vec<R>>,
-	n_edges: usize
+	pub adjacency: Vec<Vec<R>>,
+	pub n_edges: usize
 }
 impl<R: UnsignedInteger> DirLoLGraph<R> {
 	#[inline(always)]
@@ -376,8 +376,8 @@ impl<R: UnsignedInteger> VecViewableAdjGraph<R> for DirLoLGraph<R> {
 	}
 }
 pub struct UndirLoLGraph<R: UnsignedInteger> {
-	adjacency: Vec<Vec<R>>,
-	n_edges: usize
+	pub adjacency: Vec<Vec<R>>,
+	pub n_edges: usize
 }
 impl<R: UnsignedInteger> UndirLoLGraph<R> {
 	#[inline(always)]
@@ -490,8 +490,8 @@ impl<R: UnsignedInteger> VecViewableAdjGraph<R> for UndirLoLGraph<R> {
 	}
 }
 pub struct WDirLoLGraph<R: UnsignedInteger, F: Float> {
-	adjacency: Vec<Vec<(F,R)>>,
-	n_edges: usize
+	pub adjacency: Vec<Vec<(F,R)>>,
+	pub n_edges: usize
 }
 impl<R: UnsignedInteger, F: Float> WDirLoLGraph<R,F> {
 	#[inline(always)]
@@ -624,8 +624,8 @@ impl<R: UnsignedInteger, F: Float> VecViewableWeightedAdjGraph<R,F> for WDirLoLG
 	}
 }
 pub struct WUndirLoLGraph<R: UnsignedInteger, F: Float> {
-	adjacency: Vec<Vec<(F,R)>>,
-	n_edges: usize
+	pub adjacency: Vec<Vec<(F,R)>>,
+	pub n_edges: usize
 }
 impl<R: UnsignedInteger, F: Float> WUndirLoLGraph<R,F> {
 	#[inline(always)]
@@ -765,10 +765,10 @@ impl<R: UnsignedInteger, F: Float> VecViewableWeightedAdjGraph<R,F> for WUndirLo
 
 
 pub struct FatDirGraph<R: UnsignedInteger> {
-	data: Vec<R>,
-	n_vertices: usize,
-	max_degree: usize,
-	n_edges: usize,
+	pub data: Vec<R>,
+	pub n_vertices: usize,
+	pub max_degree: usize,
+	pub n_edges: usize,
 }
 impl<R: UnsignedInteger> FatDirGraph<R> {
 	#[inline(always)]

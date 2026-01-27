@@ -23,7 +23,7 @@ futures = "0.3.28"
 paste = "1.0.12"
 probability = "0.20.3"
 indicatif = "0.17.3"
-hdf5 = "0.8.1"
+hdf5 = {version="0.8.1", optional=true}
 rayon = "1.7.0"
 half = {version="2.2.1", features=["num-traits"]}
 numpy = {version="0.18.0", features=["half"], optional=true}
@@ -36,6 +36,7 @@ roaring = "0.10.10"
 default = ["python"]
 count_operations = []
 python = ["numpy", "pyo3"]
+hdf5 = ["dep:hdf5"]
 nightly-features = []
 
 [profile.profiling]
