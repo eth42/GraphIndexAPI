@@ -258,10 +258,13 @@ pub trait GraphIndex<R: SyncUnsignedInteger, F: SyncFloat, Dist: Distance<F>>: G
 	/// Self join using the regular `greedy_search_batch` function
 	fn self_join_query(&self, k_neighbors: usize, max_heap_size: usize) -> WDirLoLGraph<R,F> {
 		let query = self.get_rows_slice(0, self.n_rows());
-		let (ids, dists) = self.greedy_search_batch(&query, k_neighbors, max_heap_size);
+		let (ids, dists) = self.greedy_search_batch(&query, k_neighbors+1, max_heap_size);
 		let adjacency = ids.axis_iter(Axis(0)).zip(dists.axis_iter(Axis(0)))
-		.map(|(i_ids, i_dists)| {
+		.enumerate()
+		.map(|(i_q, (i_ids, i_dists))| {
 			i_dists.into_iter().zip(i_ids.into_iter())
+			.filter(|(_,&i)| i.to_usize().unwrap() != i_q)
+			.take(k_neighbors)
 			.map(|(&w,&i)| (w,i)).collect()
 		}).collect();
 		WDirLoLGraph {
@@ -291,15 +294,18 @@ pub trait GraphIndex<R: SyncUnsignedInteger, F: SyncFloat, Dist: Distance<F>>: G
 			.zip(query_chunk.axis_iter(Axis(0)))
 			.for_each(|((i_q, adj), q)| {
 				*entrypoints_override.get_mut(0).unwrap() = R::from(i_q).unwrap();
-				self._init_cache(&mut cache, &q, k_neighbors, max_heap_size, Some(&entrypoints_override));
+				self._init_cache(&mut cache, &q, k_neighbors+1, max_heap_size, Some(&entrypoints_override));
 				self.greedy_search_layer_with_cache(
 					&q,
 					&mut cache,
 					max_heap_size,
 					0,
 				);
-				let (ids_i, dists_i) = cache.extract_nn(k_neighbors);
-				dists_i.into_iter().zip(ids_i.into_iter()).for_each(|(w,i)| adj.push((w,i)))
+				let (ids_i, dists_i) = cache.extract_nn(k_neighbors+1);
+				dists_i.into_iter().zip(ids_i.into_iter())
+				.filter(|(_,i)| i.to_usize().unwrap() != i_q)
+				.take(k_neighbors)
+				.for_each(|(w,i)| adj.push((w,i)))
 			});
 		});
 		WDirLoLGraph {
