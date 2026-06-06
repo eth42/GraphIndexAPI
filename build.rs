@@ -10,6 +10,6 @@ fn main() {
 		//enable the 'nightly-features' feature flag
 		println!("cargo:rustc-cfg=feature=\"nightly-features\"");
 	} else {
-		panic!("Unexpected value for rustc toolchain {:?}", rust_toolchain)
+		println!("Unexpected value for rustc toolchain {:?}", rust_toolchain)
 	}
 }
