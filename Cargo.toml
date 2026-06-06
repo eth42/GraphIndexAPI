@@ -17,6 +17,7 @@ num-traits = "0.2.14"
 ndarray = "0.15" # Has to be the same as used by hdf5 to work
 ndarray-rand = "0.14.0"
 ndarray-linalg = {version="0.16.0", features = ["openblas-system"]}
+openblas-src = { version = "0.10", features = ["rustls"] } # Feature override necessary for ndarray-linalg to work
 ndarray-stats = "0.6.0"
 rand = "0.8.5"
 futures = "0.3.28"
