@@ -1,4 +1,6 @@
 use paste::paste;
+use num_traits::ConstZero;
+use half::f16;
 
 use crate::types::Sync;
 
@@ -128,3 +130,107 @@ int_bits!(u32, 32);
 int_bits!(u64, 64);
 int_bits!(u128, 128);
 
+
+macro_rules! float_bits {
+	($ftype: ty, $itype: ty, $n_bits: literal ) => {
+		paste! {
+			const fn [<bit_mask_arr_gen_ $ftype>](inv: bool) -> [$ftype; $n_bits] {
+				let mut ret = [$ftype::ZERO; $n_bits];
+				let mut i=0;
+				while i<$n_bits {
+					let mut v = (1 as $itype) << i;
+					if inv { v = !v; }
+					ret[i] = $ftype::from_bits(v);
+					i += 1;
+				}
+				ret
+			}
+			impl BitMasked<$n_bits> for $ftype {
+				const BIT_MASKS: [$ftype; $n_bits] = [<bit_mask_arr_gen_ $ftype>](false);
+				const INV_BIT_MASKS: [$ftype; $n_bits] = [<bit_mask_arr_gen_ $ftype>](true);
+			}
+		}
+		impl Bits for $ftype {
+			#[inline(always)]
+			fn size() -> usize { $n_bits }
+			#[inline(always)]
+			fn get_bit_unchecked(&self, i: usize) -> bool {
+				unsafe {
+					std::mem::transmute::<&$ftype,&$itype>(self).get_bit_unchecked(i)
+				}
+			}
+			#[inline(always)]
+			fn set_bit_unchecked(&mut self, i: usize, b: bool) {
+				unsafe {
+					std::mem::transmute::<&mut $ftype,&mut $itype>(self).set_bit_unchecked(i,b)
+				}
+			}
+			#[inline(always)]
+			fn count_bits(&self) -> usize {
+				unsafe {
+					std::mem::transmute::<&$ftype,&$itype>(self).count_ones() as usize
+				}
+			}
+			#[inline(always)]
+			fn count_bits_range_unchecked(&self, lo: usize, hi: usize) -> usize {
+				unsafe {
+					std::mem::transmute::<&$ftype,&$itype>(self).count_bits_range_unchecked(lo,hi)
+				}
+			}
+			#[inline(always)]
+			fn zeros() -> Self { <$ftype>::ZERO }
+			#[inline(always)]
+			fn ones() -> Self {
+				unsafe {
+					std::mem::transmute::<$itype,$ftype>(<$itype as BitMasked<$n_bits>>::BIT_MASKS.iter().sum())
+				}
+			}
+			#[inline(always)]
+			fn hamming_dist(&self, other: &Self) -> usize {
+				unsafe {
+					std::mem::transmute::<&$ftype,&$itype>(self)
+					.hamming_dist(std::mem::transmute::<&$ftype,&$itype>(other))
+				}
+			}
+			#[inline(always)]
+			fn dot_prod(&self, other: &Self) -> usize {
+				unsafe {
+					std::mem::transmute::<&$ftype,&$itype>(self)
+					.dot_prod(std::mem::transmute::<&$ftype,&$itype>(other))
+				}
+			}
+			#[inline(always)]
+			fn or(&self, other: &Self) -> Self {
+				unsafe {
+					std::mem::transmute::<$itype,$ftype>(
+						std::mem::transmute::<&$ftype,&$itype>(self)
+						.or(std::mem::transmute::<&$ftype,&$itype>(other))
+					)
+				}
+			}
+			#[inline(always)]
+			fn and(&self, other: &Self) -> Self {
+				unsafe {
+					std::mem::transmute::<$itype,$ftype>(
+						std::mem::transmute::<&$ftype,&$itype>(self)
+						.and(std::mem::transmute::<&$ftype,&$itype>(other))
+					)
+				}
+			}
+			#[inline(always)]
+			fn xor(&self, other: &Self) -> Self {
+				unsafe {
+					std::mem::transmute::<$itype,$ftype>(
+						std::mem::transmute::<&$ftype,&$itype>(self)
+						.xor(std::mem::transmute::<&$ftype,&$itype>(other))
+					)
+				}
+			}
+			#[inline(always)]
+			fn not(&self) -> Self { self.xor(&Self::ones()) }
+		}
+	};
+}
+float_bits!(f16, u16, 16);
+float_bits!(f32, u32, 32);
+float_bits!(f64, u64, 64);

@@ -1,4 +1,4 @@
-use ndarray::{Array1,Array2};
+use ndarray::{Array1,Array2,ArrayView2};
 use std::{pin::Pin, marker::PhantomData};
 use futures::{prelude::*, executor::block_on};
 
@@ -42,6 +42,7 @@ impl<T: Number> H5PyDataset<T> {
 }
 impl<T: Number> MatrixDataSource<T> for H5PyDataset<T> {
 	const SUPPORTS_ROW_VIEW: bool = false;
+	const SUPPORTS_ROW_SLICE_VIEW: bool = false;
 	fn n_rows(&self) -> usize { self.n_rows }
 	fn n_cols(&self) -> usize { self.n_cols }
 	fn get_row(&self, i_row: usize) -> Array1<T> {
@@ -111,6 +112,9 @@ impl<T: Number> MatrixDataSource<T> for H5PyDataset<T> {
 	fn get_row_view(&self, _i_row: usize) -> &[T] {
 		panic!("Row view not supported for H5PyDataset");
 	}
+	fn get_row_slice_view(&self, _i_row_from: usize, _i_row_to: usize) -> ArrayView2<T> {
+		panic!("Row slice view not supported for H5PyDataset");
+	}
 }
 
 pub struct CachingH5PyReader<T: StaticNumber> {
@@ -146,6 +150,7 @@ impl<T: StaticNumber> CachingH5PyReader<T> {
 }
 impl<T: StaticNumber> MatrixDataSource<T> for CachingH5PyReader<T> {
 	const SUPPORTS_ROW_VIEW: bool = H5PyDataset::<T>::SUPPORTS_ROW_VIEW;
+	const SUPPORTS_ROW_SLICE_VIEW: bool = H5PyDataset::<T>::SUPPORTS_ROW_SLICE_VIEW;
 	fn n_rows(&self) -> usize {
 		<H5PyDataset<T> as MatrixDataSource<T>>::n_rows(&self.dataset)
 	}
@@ -163,6 +168,9 @@ impl<T: StaticNumber> MatrixDataSource<T> for CachingH5PyReader<T> {
 	}
 	fn get_row_view(&self, i_row: usize) -> &[T] {
 		self.dataset.get_row_view(i_row)
+	}
+	fn get_row_slice_view(&self, i_row_from: usize, i_row_to: usize) -> ArrayView2<T> {
+		self.dataset.get_row_slice_view(i_row_from, i_row_to)
 	}
 }
 impl<T: StaticNumber> AsyncMatrixDataSource<T> for CachingH5PyReader<T> {

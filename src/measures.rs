@@ -1,8 +1,12 @@
 use std::vec::Vec;
 use std::marker::PhantomData;
 use ndarray::{Data, Axis, ArrayBase, Array, Array1, Array2, Ix1, Ix2};
+#[cfg(target_arch = "x86_64")]
+use num::NumCast;
 
-use crate::types::{Float, VFMASqEuc};
+#[cfg(target_arch = "x86_64")]
+use crate::types::{VFMASqEuc, VFMADotProd, VFMAHamming};
+use crate::{bit_vectors::BitVector, data::TransmuteInto, types::{Float}};
 
 
 /* General definition of inner products with helper functions
@@ -358,9 +362,127 @@ impl<N: Float> Distance<N> for CosineDistance<N> {
 		let cos = dot / <N as num_traits::Float>::sqrt(zero.max(sqnorm1*sqnorm2));
 		one - cos
 	}
+}
+
+#[derive(Debug,Clone)]
+pub struct NegDotProduct<N: Float> { _marker: PhantomData<N> }
+impl<N: Float> NegDotProduct<N> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { NegDotProduct{_marker: PhantomData} }
+}
+impl<N: Float> Distance<N> for NegDotProduct<N> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		#[cfg(feature="count_operations")]
+		unsafe {PROD_COUNTER += 1;}
+		#[cfg(target_arch = "x86_64")]
+		return -<N as VFMADotProd<8>>::dot_prod(obj1, obj2, obj1.len());
+		#[cfg(not(target_arch = "x86_64"))]
+		return -obj1.into_iter().zip(obj2.into_iter())
+		.map(|(&a,&b)| a * b)
+		.reduce(|a, b| a+b)
+		.unwrap_or(num::Zero::zero());
+	}
 
 }
 
+#[derive(Debug,Clone)]
+pub struct DotProdSurrogateAdd<N: Float> {
+	_marker: PhantomData<N>,
+}
+impl<N: Float> DotProdSurrogateAdd<N> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { DotProdSurrogateAdd{ _marker: PhantomData } }
+}
+impl<N: Float> Distance<N> for DotProdSurrogateAdd<N> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		let d = obj1.len();
+		#[cfg(feature="count_operations")]
+		unsafe {DIST_COUNTER += 1;}
+		// simple_sq_euc(obj1, obj2)
+		#[cfg(not(target_arch = "x86_64"))]
+		let result = optimized_sq_euc::<_,4>(obj1, obj2, d-1);
+		#[cfg(target_arch = "x86_64")]
+		let result = <N as VFMASqEuc<8>>::sq_euc(obj1, obj2, d-1);
+		let v = obj1[d-1] + obj2[d-1];
+		let result = result - v*v;
+		result
+	}
+}
+#[derive(Debug,Clone)]
+pub struct DotProdSurrogateSub<N: Float> {
+	_marker: PhantomData<N>,
+}
+impl<N: Float> DotProdSurrogateSub<N> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { DotProdSurrogateSub{ _marker: PhantomData } }
+}
+impl<N: Float> Distance<N> for DotProdSurrogateSub<N> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		let d = obj1.len();
+		#[cfg(feature="count_operations")]
+		unsafe {DIST_COUNTER += 1;}
+		// simple_sq_euc(obj1, obj2)
+		#[cfg(not(target_arch = "x86_64"))]
+		let result = optimized_sq_euc::<_,4>(obj1, obj2, d-1);
+		#[cfg(target_arch = "x86_64")]
+		let result = <N as VFMASqEuc<8>>::sq_euc(obj1, obj2, d-1);
+		let v = obj1[d-1] - obj2[d-1];
+		let result = result - v*v;
+		result
+	}
+}
+#[derive(Debug,Clone)]
+pub struct DotProdSurrogateMix<N: Float> {
+	factor: N,
+}
+impl<N: Float> DotProdSurrogateMix<N> {
+	#[allow(dead_code)]
+	pub fn new(factor: N) -> Self { DotProdSurrogateMix{ factor: factor } }
+}
+impl<N: Float> Distance<N> for DotProdSurrogateMix<N> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		let d = obj1.len();
+		#[cfg(feature="count_operations")]
+		unsafe {DIST_COUNTER += 1;}
+		// simple_sq_euc(obj1, obj2)
+		#[cfg(not(target_arch = "x86_64"))]
+		let result = optimized_sq_euc::<_,4>(obj1, obj2, d-1);
+		#[cfg(target_arch = "x86_64")]
+		let result = <N as VFMASqEuc<8>>::sq_euc(obj1, obj2, d-1);
+		let a = obj1[d-1];
+		let b = obj2[d-1];
+		let ab = a*b;
+		let result = result - (a*a + b*b + self.factor*(ab+ab));
+		// let v1 = obj1[d-1] + obj2[d-1];
+		// let v2 = obj1[d-1] - obj2[d-1];
+		// let result = result - self.factor*v1*v1 - (N::one()-self.factor)*v2*v2;
+		result
+	}
+}
+
+#[derive(Debug,Clone)]
+pub struct HammingDistance<N: Float> where for<'a> &'a[N]: BitVector { _marker: PhantomData<N> }
+impl<N: Float> HammingDistance<N> where for<'a> &'a[N]: BitVector {
+	#[allow(dead_code)]
+	pub fn new() -> Self { HammingDistance{_marker: PhantomData} }
+}
+impl<N: Float> Distance<N> for HammingDistance<N> where for<'a> &'a[N]: BitVector {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		#[cfg(feature="count_operations")]
+		unsafe {PROD_COUNTER += 1;}
+		#[cfg(not(target_arch = "x86_64"))]
+		return N::from(obj1.hamming_dist(&obj2)).unwrap();
+		#[cfg(target_arch = "x86_64")]
+		let d = obj1.len();
+		#[cfg(target_arch = "x86_64")]
+		return NumCast::from(<N as VFMAHamming<16>>::hamm_dist(obj1, obj2, d)).unwrap();
+	}
+}
 
 
 #[allow(unused)]
@@ -475,6 +597,283 @@ impl<N: Float> EuclideanDistance<N> {
 impl<N: Float> Distance<N> for EuclideanDistance<N> {
 	#[inline(always)]
 	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N { <N as num_traits::Float>::sqrt(self.sq_euc.dist_slice(obj1, obj2)) }
+}
+
+
+
+#[derive(Debug,Clone)]
+pub struct SparseNegDotProduct<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> { _marker: PhantomData<(N,R)> }
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> SparseNegDotProduct<N,R> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { SparseNegDotProduct{_marker: PhantomData} }
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> Distance<N> for SparseNegDotProduct<N,R> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		#[cfg(feature="count_operations")]
+		unsafe {DIST_COUNTER += 1;}
+		unsafe {
+			let mut id1 = obj1.as_ptr();
+			let mut id2 = obj2.as_ptr();
+			let idend1 = id1.add(obj1.len());
+			let idend2 = id2.add(obj2.len());
+			let mut out = N::zero();
+			while id1 < idend1 && id2 < idend2 {
+				let id1r = id1.as_ref().unwrap_unchecked().transmute();
+				let id2r = id2.as_ref().unwrap_unchecked().transmute();
+				if id1r < id2r { id1 = id1.add(2); }
+				else if id2r < id1r { id2 = id2.add(2); }
+				else {
+					let val1 = *id1.add(1);
+					let val2 = *id2.add(1);
+					out -= val1*val2;
+					id1 = id1.add(2);
+					id2 = id2.add(2);
+				}
+			}
+			out
+		}
+	}
+}
+#[derive(Debug,Clone)]
+pub struct SparseSquaredEuclideanDistance<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> { _marker: PhantomData<(N,R)> }
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> SparseSquaredEuclideanDistance<N,R> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { SparseSquaredEuclideanDistance{_marker: PhantomData} }
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> Distance<N> for SparseSquaredEuclideanDistance<N,R> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		#[cfg(feature="count_operations")]
+		unsafe {DIST_COUNTER += 1;}
+		unsafe {
+			let mut id1 = obj1.as_ptr();
+			let mut id2 = obj2.as_ptr();
+			let idend1 = id1.add(obj1.len());
+			let idend2 = id2.add(obj2.len());
+			/* Macro that reads the current value and increments the counter */
+			macro_rules! read {
+				($id:ident) => {{
+						let val = *$id.add(1);
+						$id = $id.add(2);
+						val
+				}};
+				(1) => {read!(id1)};
+				(2) => {read!(id2)};
+			}
+			let mut out = N::zero();
+			while id1 < idend1 && id2 < idend2 {
+				let id1r = id1.as_ref().unwrap_unchecked().transmute();
+				let id2r = id2.as_ref().unwrap_unchecked().transmute();
+				let diff = if id1r < id2r { read!(1) }
+				else if id2r < id1r { read!(2) }
+				else { read!(1) - read!(2) };
+				out += diff*diff;
+			}
+			while id1 < idend1 {
+				let diff = read!(1);
+				out += diff*diff;
+			}
+			while id2 < idend2 {
+				let diff = read!(2);
+				out += diff*diff;
+			}
+			out
+		}
+	}
+}
+#[derive(Debug,Clone)]
+pub struct SparseEuclideanDistance<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> { sq_euc: SparseSquaredEuclideanDistance<N,R> }
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> SparseEuclideanDistance<N,R> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { SparseEuclideanDistance{ sq_euc: SparseSquaredEuclideanDistance::new() } }
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> Distance<N> for SparseEuclideanDistance<N,R> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N { <N as num_traits::Float>::sqrt(self.sq_euc.dist_slice(obj1, obj2)) }
+}
+#[derive(Debug,Clone)]
+pub struct SparseDotProdSurrogateAdd<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> {
+	_marker: PhantomData<N>,
+	sq_euc: SparseSquaredEuclideanDistance<N,R>,
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> SparseDotProdSurrogateAdd<N,R> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { SparseDotProdSurrogateAdd{
+		_marker: PhantomData,
+		sq_euc: SparseSquaredEuclideanDistance::new()
+	} }
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> Distance<N> for SparseDotProdSurrogateAdd<N,R> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		/* No need to count distance operations here, as we are doing that in the wrapped distance function */
+		let d1 = obj1.len();
+		let d2 = obj2.len();
+		let last_col1 = obj1[d1-2].transmute();
+		let last_col2 = obj2[d2-2].transmute();
+		let (result, v) = if last_col1 == last_col2 {
+			/* Both objects have a column for their norm */
+			(
+				self.sq_euc.dist_slice(obj1.split_at(d1-2).0,obj2.split_at(d2-2).0),
+				obj1[d1-1] + obj2[d2-1],
+			)
+		} else if last_col1 < last_col2 {
+			/* Only object 2 has a column for its norm */
+			(
+				self.sq_euc.dist_slice(obj1,obj2.split_at(d2-2).0),
+				obj2[d2-1],
+			)
+		} else {
+			/* Only object 1 has a column for its norm */
+			(
+				self.sq_euc.dist_slice(obj1.split_at(d1-2).0,obj2),
+				obj1[d1-1],
+			)
+		};
+		let result = result - v*v;
+		result
+	}
+}
+#[derive(Debug,Clone)]
+pub struct SparseDotProdSurrogateSub<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> {
+	_marker: PhantomData<N>,
+	sq_euc: SparseSquaredEuclideanDistance<N,R>,
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> SparseDotProdSurrogateSub<N,R> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { SparseDotProdSurrogateSub{
+		_marker: PhantomData,
+		sq_euc: SparseSquaredEuclideanDistance::new()
+	} }
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> Distance<N> for SparseDotProdSurrogateSub<N,R> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		/* No need to count distance operations here, as we are doing that in the wrapped distance function */
+		let d1 = obj1.len();
+		let d2 = obj2.len();
+		let last_col1 = obj1[d1-2].transmute();
+		let last_col2 = obj2[d2-2].transmute();
+		let (result, v) = if last_col1 == last_col2 {
+			/* Both objects have a column for their norm */
+			(
+				self.sq_euc.dist_slice(obj1.split_at(d1-2).0,obj2.split_at(d2-2).0),
+				obj1[d1-1] - obj2[d2-1],
+			)
+		} else if last_col1 < last_col2 {
+			/* Only object 2 has a column for its norm */
+			(
+				self.sq_euc.dist_slice(obj1,obj2.split_at(d2-2).0),
+				obj2[d2-1],
+			)
+		} else {
+			/* Only object 1 has a column for its norm */
+			(
+				self.sq_euc.dist_slice(obj1.split_at(d1-2).0,obj2),
+				obj1[d1-1],
+			)
+		};
+		let result = result - v*v;
+		result
+	}
+}
+#[derive(Debug,Clone)]
+pub struct SparseDotProdSurrogateMix<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> {
+	factor: N,
+	sq_euc: SparseSquaredEuclideanDistance<N,R>,
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> SparseDotProdSurrogateMix<N,R> {
+	#[allow(dead_code)]
+	pub fn new(factor: N) -> Self { SparseDotProdSurrogateMix{
+		factor: factor,
+		sq_euc: SparseSquaredEuclideanDistance::new()
+	} }
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> Distance<N> for SparseDotProdSurrogateMix<N,R> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		/* No need to count distance operations here, as we are doing that in the wrapped distance function */
+		let d1 = obj1.len();
+		let d2 = obj2.len();
+		let last_col1 = obj1[d1-2].transmute();
+		let last_col2 = obj2[d2-2].transmute();
+		let (result, v) = if last_col1 == last_col2 {
+			/* Both objects have a column for their norm */
+			let a = obj1[d1-1];
+			let b = obj2[d2-1];
+			let ab = a*b;
+			(
+				self.sq_euc.dist_slice(obj1.split_at(d1-2).0,obj2.split_at(d2-2).0),
+				a*a + b*b + self.factor*(ab+ab),
+			)
+		} else if last_col1 < last_col2 {
+			/* Only object 2 has a column for its norm */
+			let b = obj2[d2-1];
+			(
+				self.sq_euc.dist_slice(obj1,obj2.split_at(d2-2).0),
+				b*b,
+			)
+		} else {
+			/* Only object 1 has a column for its norm */
+			let a = obj1[d1-1];
+			(
+				self.sq_euc.dist_slice(obj1.split_at(d1-2).0,obj2),
+				a*a,
+			)
+		};
+		let result = result - v;
+		result
+	}
+}
+#[derive(Debug,Clone)]
+pub struct SparseNormedSquaredEuclideanDistance<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> { _marker: PhantomData<(N,R)> }
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> SparseNormedSquaredEuclideanDistance<N,R> {
+	#[allow(dead_code)]
+	pub fn new() -> Self { SparseNormedSquaredEuclideanDistance{_marker: PhantomData} }
+}
+impl<N: Float+TransmuteInto<R>, R: NumCast+Clone+std::cmp::PartialOrd> Distance<N> for SparseNormedSquaredEuclideanDistance<N,R> {
+	#[inline(always)]
+	fn dist_slice(&self, obj1: &[N], obj2: &[N]) -> N {
+		#[cfg(feature="count_operations")]
+		unsafe {DIST_COUNTER += 1;}
+		unsafe {
+			let mut id1 = obj1.as_ptr();
+			let mut id2 = obj2.as_ptr();
+			let idend1 = id1.add(obj1.len()-2);
+			let idend2 = id2.add(obj2.len()-2);
+			let norm1 = obj1[obj1.len()-1];
+			let norm2 = obj2[obj2.len()-1];
+			/* Macro that reads the current value and increments the counter */
+			macro_rules! read {
+				($id:ident, $norm:ident) => {{
+						let val = *$id.add(1) / $norm;
+						$id = $id.add(2);
+						val
+				}};
+				(1) => {read!(id1,norm1)};
+				(2) => {read!(id2,norm2)};
+			}
+			let mut out = N::zero();
+			while id1 < idend1 && id2 < idend2 {
+				let id1r = id1.as_ref().unwrap_unchecked().transmute();
+				let id2r = id2.as_ref().unwrap_unchecked().transmute();
+				let diff = if id1r < id2r { read!(1) }
+				else if id2r < id1r { read!(2) }
+				else { read!(1) - read!(2) };
+				out += diff*diff;
+			}
+			while id1 < idend1 {
+				let diff = read!(1);
+				out += diff*diff;
+			}
+			while id2 < idend2 {
+				let diff = read!(2);
+				out += diff*diff;
+			}
+			out
+		}
+	}
 }
 
 

@@ -185,6 +185,69 @@ impl<'a, B: Bits, It: Iterator<Item=&'a B>> Iterator for BitsToBoolIterator<'a, 
 }
 
 
+impl<'b, B: Bits> BitVector for &'b [B] {
+	type BitIterator<'a> = BitsToBoolIterator<'a, B, std::slice::Iter<'a, B>> where B: 'a, 'b: 'a;
+
+	#[inline(always)]
+	fn size(&self) -> usize {
+		self.len() * B::size()
+	}
+	#[inline(always)]
+	fn iter_bits<'a>(&'a self) -> Self::BitIterator<'a> {
+		BitsToBoolIterator::new(self.iter())
+	}
+	#[inline(always)]
+	fn get_bit_unchecked(&self, i: usize) -> bool {
+		let entry = i / B::size();
+		let bit_index = i % B::size();
+		unsafe { self.get_unchecked(entry).get_bit_unchecked(bit_index) }
+	}
+	#[inline(always)]
+	fn hamming_dist_same(&self, other: &Self) -> usize {
+		self.iter()
+		.zip(other.iter())
+		.map(|(a,b)| a.hamming_dist(b))
+		.sum()
+	}
+	#[inline(always)]
+	fn dot_prod_same(&self, other: &Self) -> usize {
+		self.iter()
+		.zip(other.iter())
+		.map(|(a,b)| a.dot_prod(b))
+		.sum()
+	}
+
+	#[inline(always)]
+	fn count_bits(&self) -> usize {
+		self.iter().map(|bits| bits.count_bits()).sum()
+	}
+	#[inline(always)]
+	fn count_bits_range_unchecked(&self, lo: usize, hi: usize) -> usize {
+		let first_item = lo / B::size();
+		let last_item = (hi-1) / B::size();
+		let first_bit_offset = lo % B::size();
+		let last_bit_offset = (hi-1) % B::size();
+		unsafe { 
+			if first_item == last_item {
+				self.get_unchecked(first_item).count_bits_range_unchecked(first_bit_offset, last_bit_offset+1)
+			} else {
+				let mut cnt = 0;
+				if first_bit_offset == 0 {
+					cnt += self.get_unchecked(first_item).count_bits();
+				} else {
+					cnt += self.get_unchecked(first_item).count_bits_range_unchecked(first_bit_offset, B::size());
+				}
+				if last_bit_offset+1 == B::size() {
+					cnt += self.get_unchecked(last_item).count_bits();
+				} else {
+					cnt += self.get_unchecked(last_item).count_bits_range_unchecked(0, last_bit_offset+1);
+				}
+				cnt += (first_item+1..last_item).map(|i| self.get_unchecked(i).count_bits()).sum::<usize>();
+				cnt
+			}
+		}
+	}
+}
 impl<B: Bits> BitVector for Vec<B> {
 	type BitIterator<'a> = BitsToBoolIterator<'a, B, std::slice::Iter<'a, B>> where B: 'a;
 
