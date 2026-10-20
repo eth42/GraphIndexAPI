@@ -56,7 +56,7 @@ pub fn bruteforce_neighbors<
 		.enumerate()
 		.par_bridge()
 		.for_each(|(i_chunk, (mut id_chunk,mut dist_chunk))| {
-			let chunk_offset = i_chunk + chunk_size;
+			let chunk_offset = i_chunk * chunk_size;
 			let mut dist_cache = Vec::with_capacity(nd);
 			id_chunk.axis_iter_mut(Axis(0))
 			.zip(dist_chunk.axis_iter_mut(Axis(0)))
